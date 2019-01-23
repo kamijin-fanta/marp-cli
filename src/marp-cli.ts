@@ -89,6 +89,11 @@ export default async function(argv: string[] = []): Promise<number> {
           group: OptionGroup.Converter,
           type: 'boolean',
         },
+        png: {
+          describe: 'Convert slide deck into PNG image',
+          group: OptionGroup.Converter,
+          type: 'boolean',
+        },
         template: {
           describe: 'Choose template',
           group: OptionGroup.Converter,

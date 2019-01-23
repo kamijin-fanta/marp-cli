@@ -13,6 +13,7 @@ import { notifier } from './watcher'
 export enum ConvertType {
   html = 'html',
   pdf = 'pdf',
+  png = 'png',
 }
 
 export interface ConverterOption {
@@ -71,7 +72,8 @@ export class Converter {
     return await this.template({
       lang,
       readyScript,
-      base: isFile && type === ConvertType.pdf ? file!.absolutePath : undefined,
+      base:
+        isFile && type !== ConvertType.html ? file!.absolutePath : undefined,
       notifyWS:
         isFile && this.options.watch && type === ConvertType.html
           ? await notifier.register(file!.absolutePath)
@@ -102,8 +104,13 @@ export class Converter {
     const result: ConvertResult = { file, newFile, template }
     if (this.options.server && opts.initial) return result
 
-    if (this.options.type === ConvertType.pdf)
-      await this.convertFileToPDF(newFile)
+    switch (this.options.type) {
+      case ConvertType.pdf:
+        await this.convertFileToPDF(newFile)
+        break
+      case ConvertType.png:
+        await this.convertFileToImage(newFile, this.options.type)
+    }
 
     if (!this.options.server) await newFile.save()
     if (opts.onConverted) opts.onConverted(result)
@@ -147,6 +154,39 @@ export class Converter {
           printBackground: true,
           preferCSSPageSize: true,
         })
+      } finally {
+        await page.close()
+      }
+    } finally {
+      if (tmpFile) await tmpFile.cleanup()
+    }
+  }
+
+  private async convertFileToImage(file: File, fileType: 'png' | 'jpeg') {
+    const tmpFile: File.TmpFileInterface | undefined = await (() => {
+      if (!this.options.allowLocalFiles) return undefined
+
+      const warning = `Insecure local file accessing is enabled for conversion of ${file.relativePath()}.`
+      warn(warning)
+
+      return file.saveTmpFile('.html')
+    })()
+
+    const uri = tmpFile
+      ? `file://${tmpFile.path}`
+      : `data:text/html,${file.buffer!.toString()}`
+
+    try {
+      const browser = await Converter.runBrowser()
+      const page = await browser.newPage()
+
+      try {
+        await page.goto(uri, {
+          waitUntil: ['domcontentloaded', 'networkidle0'],
+        })
+        await page.emulateMedia('print')
+
+        file.buffer = await page.screenshot({ type: fileType })
       } finally {
         await page.close()
       }

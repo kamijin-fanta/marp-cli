@@ -25,6 +25,7 @@ export interface IMarpCLIArguments {
   inputDir?: string
   output?: string
   pdf?: boolean
+  png?: boolean
   preview?: boolean
   server?: boolean
   template?: string
@@ -114,6 +115,24 @@ export class MarpCLIConfig {
       return p
     })()
 
+    const type = (() => {
+      if (
+        this.args.pdf ||
+        this.conf.pdf ||
+        `${output}`.toLowerCase().endsWith('.pdf')
+      )
+        return ConvertType.pdf
+
+      if (
+        this.args.png ||
+        this.conf.png ||
+        `${output}`.toLowerCase().endsWith('.png')
+      )
+        return ConvertType.png
+
+      return ConvertType.html
+    })()
+
     if (
       themeSet.themes.size <= initialThemes.length &&
       themeSetPathes.length > 0
@@ -126,6 +145,7 @@ export class MarpCLIConfig {
       preview,
       server,
       themeSet,
+      type,
       allowLocalFiles:
         this.pickDefined(
           this.args.allowLocalFiles,
@@ -140,12 +160,6 @@ export class MarpCLIConfig {
         : undefined,
       template: this.args.template || this.conf.template || 'bespoke',
       theme: theme instanceof Theme ? theme.name : theme,
-      type:
-        this.args.pdf ||
-        this.conf.pdf ||
-        `${output}`.toLowerCase().endsWith('.pdf')
-          ? ConvertType.pdf
-          : ConvertType.html,
       watch:
         this.pickDefined(this.args.watch, this.conf.watch) ||
         preview ||
