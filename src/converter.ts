@@ -6,7 +6,7 @@ import { warn } from './cli'
 import { Engine } from './engine'
 import { error } from './error'
 import { File, FileType } from './file'
-import templates, { TemplateResult } from './templates/'
+import templates, { Template, TemplateResult } from './templates/'
 import { ThemeSet } from './theme'
 import { notifier } from './watcher'
 
@@ -54,7 +54,7 @@ export class Converter {
     this.options = opts
   }
 
-  get template() {
+  get template(): Template {
     const template = templates[this.options.template]
     if (!template) error(`Template "${this.options.template}" is not found.`)
 
@@ -83,14 +83,14 @@ export class Converter {
         const ret = engine.render(`${markdown}${additionals}`)
 
         if (isFile) {
-          const themeDir: string | undefined =
-            ((<any>engine).lastGlobalDirectives || {}).theme ||
-            (engine.themeSet.default! || {}).name
-
-          this.options.themeSet.observe(file!.absolutePath, themeDir)
+          this.options.themeSet.observe(
+            file!.absolutePath,
+            (engine.lastGlobalDirectives || {}).theme ||
+              (engine.themeSet.default! || {}).name
+          )
         }
 
-        return ret
+        return [engine, ret]
       },
     })
   }
@@ -109,7 +109,11 @@ export class Converter {
         await this.convertFileToPDF(newFile)
         break
       case ConvertType.png:
-        await this.convertFileToImage(newFile, this.options.type)
+        await this.convertFileToImage(
+          newFile,
+          this.options.type,
+          template.size!
+        )
     }
 
     if (!this.options.server) await newFile.save()
@@ -128,78 +132,25 @@ export class Converter {
   }
 
   private async convertFileToPDF(file: File) {
-    const tmpFile: File.TmpFileInterface | undefined = await (() => {
-      if (!this.options.allowLocalFiles) return undefined
-
-      const warning = `Insecure local file accessing is enabled for conversion of ${file.relativePath()}.`
-      warn(warning)
-
-      return file.saveTmpFile('.html')
-    })()
-
-    const uri = tmpFile
-      ? `file://${tmpFile.path}`
-      : `data:text/html,${file.buffer!.toString()}`
-
-    try {
-      const browser = await Converter.runBrowser()
-      const page = await browser.newPage()
-
-      try {
-        await page.goto(uri, {
-          waitUntil: ['domcontentloaded', 'networkidle0'],
-        })
-
-        file.buffer = await page.pdf({
-          printBackground: true,
-          preferCSSPageSize: true,
-        })
-      } finally {
-        await page.close()
-      }
-    } finally {
-      if (tmpFile) await tmpFile.cleanup()
-    }
+    file.buffer = await this.usePuppeteer(file, async (page, uri) => {
+      await page.goto(uri, { waitUntil: ['domcontentloaded', 'networkidle0'] })
+      return await page.pdf({ printBackground: true, preferCSSPageSize: true })
+    })
   }
 
-  private async convertFileToImage(file: File, fileType: 'png' | 'jpeg') {
-    const tmpFile: File.TmpFileInterface | undefined = await (() => {
-      if (!this.options.allowLocalFiles) return undefined
+  private async convertFileToImage(
+    file: File,
+    fileType: 'png' | 'jpeg',
+    size: { height: number; width: number }
+  ) {
+    file.buffer = await this.usePuppeteer(file, async (page, uri) => {
+      await page.setViewport(size)
+      await page.goto(uri, { waitUntil: ['domcontentloaded', 'networkidle0'] })
+      await page.emulateMedia('print')
 
-      const warning = `Insecure local file accessing is enabled for conversion of ${file.relativePath()}.`
-      warn(warning)
-
-      return file.saveTmpFile('.html')
-    })()
-
-    const uri = tmpFile
-      ? `file://${tmpFile.path}`
-      : `data:text/html,${file.buffer!.toString()}`
-
-    try {
-      const browser = await Converter.runBrowser()
-      const page = await browser.newPage()
-
-      try {
-        await page.goto(uri, {
-          waitUntil: ['domcontentloaded', 'networkidle0'],
-        })
-        await page.emulateMedia('print')
-
-        file.buffer = await page.screenshot({ type: fileType })
-      } finally {
-        await page.close()
-      }
-    } finally {
-      if (tmpFile) await tmpFile.cleanup()
-    }
+      return await page.screenshot({ type: fileType })
+    })
   }
-
-  static async closeBrowser() {
-    if (Converter.browser) await Converter.browser.close()
-  }
-
-  private static browser?: puppeteer.Browser
 
   private generateEngine(mergeOptions: MarpitOptions) {
     const { html, options } = this.options
@@ -226,6 +177,43 @@ export class Converter {
 
     return engine
   }
+
+  private async usePuppeteer<T>(
+    file: File,
+    process: (page: puppeteer.Page, uri: string) => Promise<T>
+  ) {
+    const tmpFile: File.TmpFileInterface | undefined = await (() => {
+      if (!this.options.allowLocalFiles) return undefined
+
+      const warning = `Insecure local file accessing is enabled for conversion of ${file.relativePath()}.`
+      warn(warning)
+
+      return file.saveTmpFile('.html')
+    })()
+
+    const uri = tmpFile
+      ? `file://${tmpFile.path}`
+      : `data:text/html,${file.buffer!.toString()}`
+
+    try {
+      const browser = await Converter.runBrowser()
+      const page = await browser.newPage()
+
+      try {
+        return await process(page, uri)
+      } finally {
+        await page.close()
+      }
+    } finally {
+      if (tmpFile) await tmpFile.cleanup()
+    }
+  }
+
+  static async closeBrowser() {
+    if (Converter.browser) await Converter.browser.close()
+  }
+
+  private static browser?: puppeteer.Browser
 
   private static async runBrowser() {
     if (!Converter.browser) {
